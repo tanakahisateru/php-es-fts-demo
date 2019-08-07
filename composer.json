@@ -5,6 +5,7 @@
         "php": "^7.3",
         "ext-ctype": "*",
         "ext-iconv": "*",
+        "ext-mbstring": "*",
         "elasticsearch/elasticsearch": "^7.0",
         "fzaninotto/faker": "^1.8",
         "symfony/console": "4.3.*",
