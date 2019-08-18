@@ -25,3 +25,10 @@ services:
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
+
+    Elasticsearch\Client:
+        factory: ['\Elasticsearch\ClientBuilder', 'fromConfig']
+        arguments:
+            -
+                hosts:
+                  - '%env(resolve:ELASTICSEARCH_HOST)%'

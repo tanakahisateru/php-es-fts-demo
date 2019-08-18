@@ -1,5 +1,12 @@
-To setup many data, MUST use `--env=prod` and `--no-debug`:
+Setup data. MUST use `--no-debug`.
 
 ```
-symfony console app:generate-fake-data 100000 --env=prod --no-debug
+symfony console app:generate-fake-data --no-debug 100000
+symfony console app:init-search-index --no-debug
+```
+
+Serve the app:
+
+```
+symfony serve --no-tls
 ```
