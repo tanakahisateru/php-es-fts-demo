@@ -2,12 +2,14 @@
 
 namespace App\Command;
 
+use App\Command\Exception\ElasticserchAcknowledgementException;
 use App\Entity\Book;
 use Doctrine\Common\Persistence\ManagerRegistry;
 use Doctrine\DBAL\Driver\PDOConnection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\NonUniqueResultException;
-use Elasticsearch\Client;
+use Doctrine\ORM\Query;
+use Elasticsearch\Client as ElasticsearchClient;
 use PDO;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -17,6 +19,7 @@ use UnexpectedValueException;
 
 class InitSearchIndexCommand extends Command
 {
+    const BATCH_SIZE = 1000;
     protected static $defaultName = 'app:init-search-index';
 
     /**
@@ -25,48 +28,78 @@ class InitSearchIndexCommand extends Command
     protected $doctrine;
 
     /**
-     * @var Client
+     * @var ElasticsearchClient
      */
-    protected $client;
+    protected $elasticsearch;
 
     /**
      * @param ManagerRegistry $doctrine
-     * @param Client $client
+     * @param ElasticsearchClient $elasticsearch
      * @param string $name
      */
-    public function __construct(ManagerRegistry $doctrine, Client $client, string $name = null)
+    public function __construct(ManagerRegistry $doctrine, ElasticsearchClient $elasticsearch, string $name = null)
     {
         parent::__construct($name);
 
         $this->doctrine = $doctrine;
-        $this->client = $client;
+        $this->elasticsearch = $elasticsearch;
     }
-
 
     protected function configure()
     {
-        $this
-            ->setDescription('Initialize search index')
-        ;
+        $this->setDescription('Initialize search index');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output)
     {
         $io = new SymfonyStyle($input, $output);
 
-        $indices = $this->client->indices();
+        try {
+            $this->initIndex();
+        } catch (ElasticserchAcknowledgementException $e) {
+            $io->error("Initialization failed");
+            $io->note($e->getMessage());
+            return;
+       }
+
+        // $response = $indices->getMapping();
+        // $io->text(json_encode($response, JSON_PRETTY_PRINT));
+
+        /////////////////////
+        $this->switchToUnbufferedMode();
+
+        $totalAmount = $this->getTotalAmount();
+        $io->progressStart($totalAmount);
+        $query = $this->queryAllBooks();
+        foreach ($this->iterateBulkData($query, self::BATCH_SIZE) as $bulkData) {
+            $this->elasticsearch->bulk([
+                'body' => $bulkData,
+            ]);
+            $io->progressAdvance(count($bulkData) / 2);
+            // single data element of bulk transport spends 2 lines
+        }
+        $io->progressFinish();
+        $io->newLine();
+        $io->success($totalAmount . ' records successfully indexed.');
+    }
+
+    /**
+     * @throws ElasticserchAcknowledgementException
+     */
+    private function initIndex(): void
+    {
+        $indices = $this->elasticsearch->indices();
 
         if ($indices->exists(['index' => 'book'])) {
             $indices->delete(['index' => 'book']);
         }
+
         $response = $indices->create([
             'index' => 'book',
             // 'body' => [], // Set shard numbers etc if clustering available
         ]);
         if (($response['acknowledged'] ?? 0) != 1) {
-            $io->error("Creation failed");
-            $io->note(json_encode($response, JSON_PRETTY_PRINT));
-            return;
+            throw new ElasticserchAcknowledgementException($response);
         }
 
         $response = $indices->putMapping([
@@ -75,37 +108,32 @@ class InitSearchIndexCommand extends Command
                 'properties' => [
                     'title' => [
                         'type' => 'keyword',
-//                        'fielddata' => true,
-                        // Note: text type has no field data to sort/calc as default.
                     ],
                     'contents' => [
                         'type' => 'text',
+                        // Note: text type has no field data to sort/calc as default.
                     ],
                 ],
             ],
         ]);
         if (($response['acknowledged'] ?? 0) != 1) {
-            $io->error("Mapping failed");
-            $io->note(json_encode($response, JSON_PRETTY_PRINT));
-            return;
+            throw new ElasticserchAcknowledgementException($response);
         }
+    }
 
-        $io->success('Type mapped indices are successfully initialized.');
-
-        $response = $indices->getMapping();
-        $io->text(json_encode($response, JSON_PRETTY_PRINT));
-
-        /////////////////////
-        $entityManager = $this->doctrine->getManager();
-        assert($entityManager instanceof EntityManagerInterface);
-        $connection = $entityManager
+    protected function switchToUnbufferedMode(): void
+    {
+        $connection = $this->getEntityManager()
             ->getConnection()
             ->getWrappedConnection();
         assert($connection instanceof PDOConnection);
         $connection->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+    }
 
+    protected function getTotalAmount()
+    {
         try {
-            $amount = $entityManager->createQueryBuilder()
+            return $this->getEntityManager()->createQueryBuilder()
                 ->from(Book::class, 'book')
                 ->select('count(book.id)')
                 ->getQuery()
@@ -113,19 +141,24 @@ class InitSearchIndexCommand extends Command
         } catch (NonUniqueResultException $e) {
             throw new UnexpectedValueException();
         }
+    }
 
-        $query = $entityManager->createQueryBuilder()
+    protected function queryAllBooks(): Query
+    {
+        return $this->getEntityManager()->createQueryBuilder()
             ->from(Book::class, 'book')
             ->select('book')
-            //->setMaxResults(100)
             ->getQuery();
+    }
 
-        $io->progressStart($amount);
-        $bulkData = [];
+    private function iterateBulkData(Query $query, int $batchSize)
+    {
         $bufferedCount = 0;
         foreach ($query->iterate() as $books) {
             foreach ($books as $book) {
                 assert($book instanceof Book);
+                $this->getEntityManager()->detach($book);
+
                 $bulkData[] = [
                     'index' => [
                         '_index' => 'book',
@@ -136,18 +169,24 @@ class InitSearchIndexCommand extends Command
                     'title' => $book->getTitle(),
                     'contents' => $book->getContents(),
                 ];
+
                 $bufferedCount += 1;
-                if ($bufferedCount >= 1000) {
-                    $this->client->bulk([
-                        'body' => $bulkData,
-                    ]);
+                if ($bufferedCount >= $batchSize) {
+                    yield $bulkData;
                     $bulkData = [];
-                    $io->progressAdvance($bufferedCount);
                     $bufferedCount = 0;
                 }
-                $entityManager->detach($book);
             }
         }
-        $io->progressFinish();
+        if (!empty($bulkData)) {
+            yield $bulkData;
+        }
+    }
+
+    private function getEntityManager(): EntityManagerInterface
+    {
+        $entityManager = $this->doctrine->getManager();
+        assert($entityManager instanceof EntityManagerInterface);
+        return $entityManager;
     }
 }
