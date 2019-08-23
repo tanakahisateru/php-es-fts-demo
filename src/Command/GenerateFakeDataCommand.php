@@ -4,9 +4,10 @@ namespace App\Command;
 
 use App\Entity\Book;
 use Doctrine\Common\Persistence\ManagerRegistry;
+use Doctrine\DBAL\Driver\Connection;
 use Doctrine\ORM\EntityManagerInterface;
-use Faker\Factory as FackerFactory;
-use Faker\ORM\Doctrine\Populator;
+use Faker\Factory as FakerFactory;
+use Faker\Generator;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -15,7 +16,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
 class GenerateFakeDataCommand extends Command
 {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 1000;
 
     protected static $defaultName = 'app:generate-fake-data';
 
@@ -44,6 +45,26 @@ class GenerateFakeDataCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $amount = (int)$input->getArgument('amount');
 
+        $this->clean();
+
+        $faker = FakerFactory::create();
+
+        $remainingCount = $amount;
+        $io->progressStart($amount);
+        while ($remainingCount > 0) {
+            $batchAmount = min($remainingCount, self::BATCH_SIZE);
+            $books = $this->createFakeObjects($faker, $batchAmount);
+            $this->batchAppend($books);
+            $io->progressAdvance($batchAmount);
+            $remainingCount -= $batchAmount;
+        }
+        $io->progressFinish();
+        $io->newLine();
+        $io->success($amount . ' records successfully created.');
+    }
+
+    private function clean(): void
+    {
         $entityManager = $this->doctrine->getManager();
         assert($entityManager instanceof EntityManagerInterface);
 
@@ -52,33 +73,35 @@ class GenerateFakeDataCommand extends Command
             ->from(Book::class, 'book')
             ->getQuery()
             ->execute();
+    }
 
-        $faker = FackerFactory::create();
-
-        $remains = $amount;
-        $io->progressStart($amount);
-        while ($remains > 0) {
-            $size = min($remains, self::BATCH_SIZE);
-
-            // FIXME EntityManager 使うと遅いので DBAL でバルクインサートにしたい
-            $populator = new Populator($faker, $entityManager);
-            $populator->addEntity(Book::class, $size, [
-                'title' => function () use ($faker) {
-                    return strtoupper(rtrim($faker->sentence(mt_rand(2, 4)), '.'));
-                },
-                'contents' => function () use ($faker) {
-                    return implode("\n", $faker->paragraphs(mt_rand(5, 10)));
-                }
-            ]);
-            $populator->execute();
-
-            $io->progressAdvance($size);
-
-            $entityManager->clear();
-            $remains -= $size;
+    private function createFakeObjects(Generator $faker, int $amount): array
+    {
+        $books = [];
+        for ($i = 0; $i < $amount; $i++) {
+            $books[] = (new Book())
+                ->setTitle(strtoupper(rtrim($faker->sentence(mt_rand(2, 4)), '.')))
+                ->setContents(implode("\n", $faker->paragraphs(mt_rand(5, 10))));
         }
-        $io->progressFinish();
-        $io->newLine();
-        $io->success($amount . 'records successfully created.');
+        return $books;
+    }
+
+    private function batchAppend(array $books)
+    {
+        $db = $this->doctrine->getConnection();
+        assert($db instanceof Connection);
+
+        $values = [];
+        foreach ($books as $book) {
+            assert($book instanceof Book);
+            $values[] = sprintf(
+                "(%s, %s)",
+                $db->quote($book->getTitle()),
+                $db->quote($book->getContents())
+            );
+        }
+
+        $valuesBlock = implode(", ", $values);
+        $db->exec("INSERT INTO book (title, contents) VALUES $valuesBlock ;");
     }
 }
