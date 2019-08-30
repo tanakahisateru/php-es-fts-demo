@@ -100,7 +100,7 @@ class BookController extends AbstractController
             'word' => $searchModel->word,
             'total' => $total,
             'books' => $this->jsonifyBooks($books),
-        ])->setEncodingOptions(JSON_PRETTY_PRINT);
+        ])->setEncodingOptions(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
     }
 
     /**
@@ -171,7 +171,7 @@ class BookController extends AbstractController
             'word' => $searchModel->word,
             'total' => $total,
             'books' => $this->jsonifyBooks($books),
-        ])->setEncodingOptions(JSON_PRETTY_PRINT);
+        ])->setEncodingOptions(JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
     }
 
     private function jsonifyBooks(array $books): array
