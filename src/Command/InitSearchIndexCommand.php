@@ -94,26 +94,69 @@ class InitSearchIndexCommand extends Command
             $indices->delete(['index' => 'book']);
         }
 
+        $docMapping = [
+            'properties' => [
+                'title' => [
+                    'type' => 'keyword',
+                    'fields' => [
+                        "bigram" => ['type' => 'text', 'analyzer' => 'bigram_analyzer'],
+                        "unigram" => ['type' => 'text', 'analyzer' => 'unigram_analyzer'],
+                    ],
+                ],
+                // Note: text type has no field data to sort/calc by default.
+
+                'contents' => [
+                    'type' => 'text',
+                    // 'index' => false,
+                    // You can remove default index data to save disk space.
+                    'fields' => [
+                        "bigram" => ['type' => 'text', 'analyzer' => 'bigram_analyzer'],
+                        "unigram" => ['type' => 'text', 'analyzer' => 'unigram_analyzer'],
+                    ],
+                ],
+            ],
+        ];
+
         $response = $indices->create([
             'index' => 'book',
-            // 'body' => [], // Set shard numbers etc if clustering available
+            'body' => [
+                'settings' => [
+                    // 'number_of_shards' => 3,
+                    // 'number_of_replicas' => 2,
+                    // Set shard numbers etc if clustering available
+                    'analysis' => [
+                        'tokenizer' => [
+                            'bigram_tokenizer' => ['type' => 'nGram', 'min_gram' => 2, 'max_gram' => 2],
+                            'unigram_tokenizer' => ['type' => 'nGram', 'min_gram' => 1, 'max_gram' => 1],
+                        ],
+        
+                        'analyzer' => [
+                            'bigram_analyzer' => [
+                                'type' => 'custom',
+                                'tokenizer' => 'bigram_tokenizer',
+                                'filter' => ['cjk_width', 'lowercase'],
+                            ],
+                            'unigram_analyzer' => [
+                                'type' => 'custom',
+                                'tokenizer' => 'unigram_tokenizer',
+                                'filter' => ['cjk_width', 'lowercase'],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
         ]);
         if (($response['acknowledged'] ?? 0) != 1) {
             throw new ElasticserchAcknowledgementException($response);
         }
 
         $response = $indices->putMapping([
+            // The mapping definition cannot be nested under a type [_doc] unless include_type_name is set to true.
+            'include_type_name' => true,
             'index' => 'book',
+            'type' => '_doc',
             'body' => [
-                'properties' => [
-                    'title' => [
-                        'type' => 'keyword',
-                    ],
-                    'contents' => [
-                        'type' => 'text',
-                        // Note: text type has no field data to sort/calc as default.
-                    ],
-                ],
+                '_doc' => $docMapping,
             ],
         ]);
         if (($response['acknowledged'] ?? 0) != 1) {

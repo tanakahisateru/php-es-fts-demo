@@ -77,8 +77,11 @@ class BookController extends AbstractController
 
         $qb = $bookRepository->createQueryBuilder('book');
         if (!empty($searchModel->word)) {
-            $qb->where("book.contents LIKE :word")
-                ->setParameter(':word', '%' . addcslashes($searchModel->word, '%_') . '%');
+            $likeExpression = '%' . addcslashes($searchModel->word, '%_') . '%';
+            $qb
+                ->where("book.title LIKE :word")
+                ->orWhere("book.contents LIKE :word")
+                ->setParameter(':word', $likeExpression);
         }
 
         try {
@@ -126,21 +129,32 @@ class BookController extends AbstractController
 
         $page = (int)$searchModel->page;
 
-        if (!empty($searchModel->word)) {
+        if (empty($searchModel->word)) {
             $query = [
-                'match' => [
-                    'contents' => $searchModel->word,
-                ],
+                'match_all' => new stdClass(),
+            ];
+        } else if (mb_strlen($searchModel->word, 'utf-8') == 1) {
+            $query = [
+                'bool' => [
+                    'should' => [
+                        ['match' => ['title.unigram' => $searchModel->word]],
+                        ['match' => ['contents.unigram' => $searchModel->word]],
+                    ]
+                ]
             ];
         } else {
             $query = [
-                'match_all' => new stdClass(),
+                'bool' => [
+                    'should' => [
+                        ['match_phrase' => ['title.bigram' => $searchModel->word]],
+                        ['match_phrase' => ['contents.bigram' => $searchModel->word]],
+                    ]
+                ]
             ];
         }
 
         $response = $this->elasticsearch->search([
             'index' => 'book',
-            // 'type' => 'book',
             'body' => [
                 'query' => $query,
                 'sort' => [
@@ -181,6 +195,7 @@ class BookController extends AbstractController
                 'id' => $book->getId(),
                 'title' => $book->getTitle(),
                 'contents' => mb_strimwidth($book->getContents(), 0, 80, '...'),
+                // 'contents' => $book->getContents(),
             ];
         }, $books);
     }
